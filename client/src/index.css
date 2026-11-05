@@ -1,0 +1,63 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Rajdhani:wght@600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-dark: #09090b;
+  --radiant-glow: rgba(16, 185, 129, 0.4);
+  --dire-glow: rgba(239, 68, 68, 0.4);
+}
+
+body {
+  background-color: var(--bg-dark);
+  background-image: 
+    radial-gradient(circle at 50% 0%, #1e1b4b 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, #111827 0%, transparent 40%);
+  color: #e4e4e7;
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
+}
+
+.esports-title {
+  font-family: 'Rajdhani', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.glass-panel {
+  background: rgba(24, 24, 27, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.hero-card {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.hero-card:hover:not(:disabled) {
+  transform: translateY(-4px) scale(1.05);
+  z-index: 10;
+}
+.hero-card:disabled {
+  opacity: 0.3;
+  filter: grayscale(100%);
+  cursor: not-allowed;
+}
+
+/* Скроллбар в стиле Dota */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
