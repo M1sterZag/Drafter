@@ -22,17 +22,16 @@ services:
     networks:
       - dota-network
 
-  # Входная точка: HTTPS для домена, сертификат выпускается и продлевается автоматически
+  # Входная точка: HTTPS по IP сервера
   caddy:
     image: caddy:2.8.4-alpine
     container_name: dota-draft-caddy
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      # Снаружи: https://<IP>:4443 (80/443 на сервере заняты Nextcloud)
+      - "${HTTPS_PORT:-4443}:443"
     environment:
-      - DOMAIN=${DOMAIN:-localhost}
+      - PUBLIC_IP=${PUBLIC_IP:-195.133.195.103}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

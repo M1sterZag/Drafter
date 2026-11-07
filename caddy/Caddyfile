@@ -1,6 +1,14 @@
-# Внешний вход: HTTPS с автоматическим сертификатом Let's Encrypt.
-# Домен берётся из переменной DOMAIN (.env), по умолчанию localhost.
-{$DOMAIN:localhost} {
+# HTTPS по IP-адресу сервера с сертификатом от встроенного CA Caddy
+# (браузер один раз покажет предупреждение — это нормально для IP без домена).
+{
+	# Клиенты, заходящие по IP, не передают SNI — отдаём сертификат для этого IP
+	default_sni {$PUBLIC_IP}
+	# Порт 80 занят Nextcloud — редирект с HTTP не нужен
+	auto_https disable_redirects
+}
+
+https://{$PUBLIC_IP} {
+	tls internal
 	encode gzip
 	reverse_proxy frontend:80
 }
