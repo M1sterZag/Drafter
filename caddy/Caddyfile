@@ -1,0 +1,6 @@
+# Внешний вход: HTTPS с автоматическим сертификатом Let's Encrypt.
+# Домен берётся из переменной DOMAIN (.env), по умолчанию localhost.
+{$DOMAIN:localhost} {
+	encode gzip
+	reverse_proxy frontend:80
+}
