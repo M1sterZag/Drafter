@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   backend:
-    build: ./server
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     container_name: dota-draft-backend
     restart: unless-stopped
     environment:
@@ -12,7 +14,9 @@ services:
       - dota-network
 
   frontend:
-    build: ./client
+    build:
+      context: .
+      dockerfile: client/Dockerfile
     container_name: dota-draft-frontend
     restart: unless-stopped
     ports:
