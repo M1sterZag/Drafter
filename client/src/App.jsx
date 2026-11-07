@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { socket } from './socket';
 import axios from 'axios';
 
@@ -28,54 +28,126 @@ const DRAFT_ORDER = [
   { team: 1, action: 'pick' },
 ];
 
+// Постоянный (на время жизни вкладки) идентификатор клиента —
+// по нему сервер возвращает капитана на его место после перезагрузки страницы
+function getClientId() {
+  try {
+    let id = sessionStorage.getItem('clientId');
+    if (!id) {
+      id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      sessionStorage.setItem('clientId', id);
+    }
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+function copyToClipboard(text) {
+  // navigator.clipboard доступен только в secure context (https / localhost)
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+  } finally {
+    document.body.removeChild(textarea);
+  }
+  return Promise.resolve();
+}
+
+// Начальные данные из URL и localStorage (читаются один раз при загрузке)
+function readInitialParams() {
+  const params = new URLSearchParams(window.location.search);
+  const urlRoom = params.get('room')?.trim().toUpperCase() || '';
+  const urlRole = params.get('role');
+  let savedName = '';
+  let savedRole = null;
+  try {
+    savedName = localStorage.getItem('playerName') || '';
+    savedRole = localStorage.getItem('playerRole');
+  } catch { /* localStorage недоступен */ }
+
+  // Роль из ссылки важнее сохранённой: ссылка зрителя не должна делать тебя капитаном
+  const isRole = (r) => r === 'spectator' || r === 'captain';
+  const role = isRole(urlRole) ? urlRole : isRole(savedRole) ? savedRole : null;
+
+  return { urlRoom, savedName, role };
+}
+
 export default function App() {
+  const [initial] = useState(readInitialParams);
   const [screen, setScreen] = useState('home');
-  const [roomId, setRoomId] = useState('');
-  const [playerName, setPlayerName] = useState('');
-  const [role, setRole] = useState('captain');
+  const [roomId, setRoomId] = useState(initial.urlRoom);
+  const [playerName, setPlayerName] = useState(initial.savedName);
+  const [role, setRole] = useState(initial.role || 'captain');
   const [state, setState] = useState(null);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
   const [selectedHero, setSelectedHero] = useState(null);
+  // Параметры последнего входа в комнату — для повторного входа после переподключения сокета
+  const joinParamsRef = useRef(null);
+
+  const joinSocketRoom = (params) => {
+    joinParamsRef.current = { ...params, clientId: getClientId() };
+    socket.emit('join', joinParamsRef.current);
+  };
+
+  // Шаг драфта из последнего состояния — чтобы сбрасывать выбор героя при смене хода
+  const lastStepKeyRef = useRef(null);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const urlRoom = params.get('room');
-    const urlRole = params.get('role');
-
-    if (urlRoom) setRoomId(urlRoom);
-    if (urlRole === 'spectator' || urlRole === 'captain') setRole(urlRole);
-
-    socket.on('state', (s) => {
+    const onState = (s) => {
+      // Ход перешёл дальше (в т.ч. по таймеру) — сбрасываем выбранного героя
+      const stepKey = s.current ? `${s.current.gameNumber}:${s.current.draftStep}` : null;
+      if (stepKey !== lastStepKeyRef.current) {
+        lastStepKeyRef.current = stepKey;
+        setSelectedHero(null);
+      }
       setState(s);
       if (s.current) setScreen('draft');
       else if (s.players?.length) setScreen('lobby');
-    });
-    socket.on('error', (e) => {
+    };
+    const onError = (e) => {
       console.error('Socket error:', e);
-      setError(e.msg);
-    });
-    return () => { socket.off('state'); socket.off('error'); };
+      setError(e?.msg || 'Ошибка');
+    };
+    const onConnect = () => {
+      // После переподключения сервер видит новый socket.id — входим в комнату заново
+      if (joinParamsRef.current) socket.emit('join', joinParamsRef.current);
+    };
+
+    socket.on('state', onState);
+    socket.on('error', onError);
+    socket.on('connect', onConnect);
+    return () => {
+      socket.off('state', onState);
+      socket.off('error', onError);
+      socket.off('connect', onConnect);
+    };
   }, []);
 
+  // Автовход по ссылке, если имя уже сохранено
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const urlRoom = params.get('room');
-    const savedName = localStorage.getItem('playerName');
-    const savedRole = localStorage.getItem('playerRole');
-
-    if (urlRoom && savedName) {
-      setPlayerName(savedName);
-      if (savedRole) setRole(savedRole);
-      setTimeout(() => {
-        socket.emit('join', {
-          roomId: urlRoom,
-          playerName: savedName,
-          role: savedRole || 'spectator'
-        });
-      }, 500);
+    const { urlRoom, savedName, role: initialRole } = initial;
+    if (urlRoom && savedName && !joinParamsRef.current) {
+      joinParamsRef.current = { roomId: urlRoom, playerName: savedName, role: initialRole || 'spectator', clientId: getClientId() };
+      socket.emit('join', joinParamsRef.current);
     }
-  }, []);
+  }, [initial]);
+
+  // Ошибка исчезает через несколько секунд, а не висит навсегда
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(''), 4000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   const createRoom = async () => {
     if (!playerName.trim()) return alert('Введи имя');
@@ -90,7 +162,7 @@ export default function App() {
       const newUrl = `${window.location.origin}/?room=${newRoomId}&role=${role}`;
       window.history.replaceState({}, '', newUrl);
 
-      socket.emit('join', { roomId: newRoomId, playerName, role });
+      joinSocketRoom({ roomId: newRoomId, playerName, role });
     } catch (e) {
       console.error(e);
       alert('Ошибка создания комнаты.');
@@ -99,9 +171,14 @@ export default function App() {
 
   const joinRoom = () => {
     if (!playerName.trim() || !roomId.trim()) return alert('Заполни имя и ID комнаты');
+    const normalizedRoomId = roomId.trim().toUpperCase();
     localStorage.setItem('playerName', playerName);
     localStorage.setItem('playerRole', role);
-    socket.emit('join', { roomId: roomId.toUpperCase(), playerName, role });
+
+    const newUrl = `${window.location.origin}/?room=${normalizedRoomId}&role=${role}`;
+    window.history.replaceState({}, '', newUrl);
+
+    joinSocketRoom({ roomId: normalizedRoomId, playerName, role });
   };
 
   const selectHero = (heroId) => {
@@ -118,9 +195,12 @@ export default function App() {
 
   const copyLink = (linkRole) => {
     const link = `${window.location.origin}/?room=${roomId}&role=${linkRole}`;
-    navigator.clipboard.writeText(link);
-    setCopied(linkRole);
-    setTimeout(() => setCopied(''), 2000);
+    copyToClipboard(link)
+      .then(() => {
+        setCopied(linkRole);
+        setTimeout(() => setCopied(''), 2000);
+      })
+      .catch(() => setError('Не удалось скопировать ссылку'));
   };
 
   const formatTime = (seconds) => {
@@ -499,18 +579,18 @@ export default function App() {
             {/* Дерево драфта */}
             <div className="glass-panel p-2 rounded-xl flex-1 overflow-y-auto">
               <div className="space-y-1.5">
-                {DRAFT_ORDER.map((draftStep, idx) => {
+                {DRAFT_ORDER.map((slot, idx) => {
                   const historyItem = draftHistory.find(h => h.step === idx);
-                  const isCurrent = idx === draftStep;
+                  const isCurrent = !finished && idx === draftStep;
                   const isCompleted = idx < draftStep;
                   const hero = historyItem ? pool.find(h => h.id === historyItem.heroId) : null;
-                  const isBan = draftStep.action === 'ban';
+                  const isBan = slot.action === 'ban';
 
                   return (
                     <div key={idx} className="flex items-center gap-1.5">
                       {/* Слот Radiant (слева) - размеры немного увеличены для пропорции */}
                       <div className="flex-1 flex justify-end">
-                        {draftStep.team === 0 && (
+                        {slot.team === 0 && (
                           <div className={`relative ${isBan ? 'w-16 h-8' : 'w-20 h-12'} rounded border-2 overflow-hidden ${
                             isCompleted 
                               ? (isBan ? 'border-red-500 bg-red-900/20' : 'border-emerald-500 bg-emerald-900/30')
@@ -534,7 +614,7 @@ export default function App() {
 
                       {/* Слот Dire (справа) - размеры немного увеличены для пропорции */}
                       <div className="flex-1 flex justify-start">
-                        {draftStep.team === 1 && (
+                        {slot.team === 1 && (
                           <div className={`relative ${isBan ? 'w-16 h-8' : 'w-20 h-12'} rounded border-2 overflow-hidden ${
                             isCompleted 
                               ? (isBan ? 'border-red-500 bg-red-900/20' : 'border-emerald-500 bg-emerald-900/30')

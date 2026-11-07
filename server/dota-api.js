@@ -2,19 +2,37 @@
 const axios = require('axios');
 
 // OpenDota API — бесплатный, без ключа, возвращает атрибуты героев
-const HEROES_URL = 'https://api.opendota.com/api/heroes';
+const HEROES_URL = process.env.HEROES_URL || 'https://api.opendota.com/api/heroes';
+const REQUEST_TIMEOUT = 10 * 1000;
 
 let heroesCache = null;
 let lastFetch = 0;
+let inFlight = null; // текущий запрос — чтобы параллельные вызовы не дублировали загрузку
 const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 часов
 
 async function fetchHeroes() {
   if (heroesCache && Date.now() - lastFetch < CACHE_TTL) return heroesCache;
+  if (inFlight) return inFlight;
 
+  inFlight = loadHeroes()
+    .catch(err => {
+      // API недоступен — работаем на устаревшем кэше, если он есть
+      if (heroesCache) {
+        console.error('⚠️ OpenDota недоступен, используется устаревший кэш героев:', err.message);
+        return heroesCache;
+      }
+      throw err;
+    })
+    .finally(() => { inFlight = null; });
+  return inFlight;
+}
+
+async function loadHeroes() {
   console.log('📡 Загружаю список героев из OpenDota API...');
-  const { data } = await axios.get(HEROES_URL);
+  const { data } = await axios.get(HEROES_URL, { timeout: REQUEST_TIMEOUT });
+  if (!Array.isArray(data)) throw new Error('Некорректный ответ OpenDota API');
 
-  heroesCache = data
+  const heroes = data
     .filter(h => h.name && h.name.startsWith('npc_dota_hero_'))
     .map(h => {
       const shortName = h.name.replace('npc_dota_hero_', '');
@@ -42,10 +60,11 @@ async function fetchHeroes() {
 
   // Логируем распределение по атрибутам
   const attrCount = { str: 0, agi: 0, int: 0, uni: 0 };
-  heroesCache.forEach(h => attrCount[h.primaryAttr]++);
-  console.log(`✅ Загружено героев: ${heroesCache.length}`);
+  heroes.forEach(h => attrCount[h.primaryAttr]++);
+  console.log(`✅ Загружено героев: ${heroes.length}`);
   console.log(`📊 Распределение: ${attrCount.str} силы, ${attrCount.agi} ловкости, ${attrCount.int} интеллекта, ${attrCount.uni} универсалов`);
 
+  heroesCache = heroes;
   lastFetch = Date.now();
   return heroesCache;
 }

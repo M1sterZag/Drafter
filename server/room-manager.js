@@ -3,6 +3,10 @@ const { generatePool } = require('./dota-api');
 
 const rooms = new Map();
 const timers = new Map();
+const cleanupTimers = new Map();
+
+// Пустая комната удаляется через это время
+const ROOM_TTL_EMPTY = 10 * 60 * 1000;
 
 const MAIN_TIME = 30;
 const EXTRA_TIME = 120;
@@ -26,8 +30,42 @@ const DRAFT_ORDER = [
   { team: 1, action: 'pick' },
 ];
 
+function generateRoomId() {
+  let id;
+  do {
+    id = Math.random().toString(36).slice(2).padEnd(6, '0').slice(0, 6).toUpperCase();
+  } while (rooms.has(id));
+  return id;
+}
+
+function stopTimer(roomId) {
+  if (timers.has(roomId)) {
+    clearInterval(timers.get(roomId));
+    timers.delete(roomId);
+  }
+}
+
+function cancelRoomCleanup(room) {
+  if (cleanupTimers.has(room.id)) {
+    clearTimeout(cleanupTimers.get(room.id));
+    cleanupTimers.delete(room.id);
+  }
+}
+
+function scheduleRoomCleanup(room) {
+  cancelRoomCleanup(room);
+  const timeout = setTimeout(() => {
+    cleanupTimers.delete(room.id);
+    if (room.players.some(p => p.online)) return;
+    stopTimer(room.id);
+    rooms.delete(room.id);
+    console.log(`🧹 Удалена пустая комната: ${room.id}`);
+  }, ROOM_TTL_EMPTY);
+  cleanupTimers.set(room.id, timeout);
+}
+
 function createRoom(allHeroes) {
-  const roomId = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const roomId = generateRoomId();
   const room = {
     id: roomId,
     players: [],
@@ -66,9 +104,7 @@ function startNewGame(room) {
 }
 
 function startTimer(room) {
-  if (timers.has(room.id)) {
-    clearInterval(timers.get(room.id));
-  }
+  stopTimer(room.id);
 
   const interval = setInterval(() => {
     if (!room.current || room.current.finished) {
@@ -107,7 +143,12 @@ function performAutoAction(room) {
   const usedIds = [...current.bans[0], ...current.bans[1], ...current.picks[0], ...current.picks[1]];
   const available = current.pool.filter(h => !usedIds.includes(h.id));
 
-  if (available.length === 0) return;
+  if (available.length === 0) {
+    // Героев не осталось — завершаем игру, чтобы таймер не крутился вечно
+    finishGame(room);
+    if (room.broadcastState) room.broadcastState();
+    return;
+  }
 
   const randomHero = available[Math.floor(Math.random() * available.length)];
 
@@ -129,21 +170,21 @@ function performAutoAction(room) {
   current.draftStep++;
   current.timers[step.team].main = MAIN_TIME;
 
-  if (current.draftStep >= DRAFT_ORDER.length) {
-    current.finished = true;
-    room.series.currentGame++;
-    if (timers.has(room.id)) {
-      clearInterval(timers.get(room.id));
-      timers.delete(room.id);
-    }
-  }
+  if (current.draftStep >= DRAFT_ORDER.length) finishGame(room);
 
   if (room.broadcastState) {
     room.broadcastState();
   }
 }
 
-function handleAction(room, playerId, heroId, actionType) {
+function finishGame(room) {
+  room.current.finished = true;
+  room.series.currentGame++;
+  stopTimer(room.id);
+}
+
+function handleAction(room, playerId, rawHeroId, actionType) {
+  const heroId = Number(rawHeroId);
   const { current, series } = room;
   if (!current || current.finished) return { error: 'Игра не активна' };
 
@@ -177,16 +218,9 @@ function handleAction(room, playerId, heroId, actionType) {
   current.draftStep++;
   current.timers[step.team].main = MAIN_TIME;
 
-  if (current.draftStep >= DRAFT_ORDER.length) {
-    current.finished = true;
-    series.currentGame++;
-    if (timers.has(room.id)) {
-      clearInterval(timers.get(room.id));
-      timers.delete(room.id);
-    }
-  }
+  if (current.draftStep >= DRAFT_ORDER.length) finishGame(room);
 
   return { ok: true };
 }
 
-module.exports = { rooms, createRoom, startNewGame, handleAction, DRAFT_ORDER };
+module.exports = { rooms, createRoom, startNewGame, handleAction, scheduleRoomCleanup, cancelRoomCleanup, DRAFT_ORDER };
