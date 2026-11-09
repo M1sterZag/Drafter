@@ -18,4 +18,9 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  {
+    // Конфиги сборки выполняются в Node.js
+    files: ['*.config.js'],
+    languageOptions: { globals: globals.node },
+  },
 ])

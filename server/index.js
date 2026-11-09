@@ -5,7 +5,18 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { fetchHeroes } = require('./dota-api');
-const { rooms, createRoom, startNewGame, handleAction, scheduleRoomCleanup, cancelRoomCleanup } = require('./room-manager');
+const {
+  rooms,
+  createRoom,
+  beginNextGame,
+  confirmReady,
+  configureSeries,
+  handleSetupChoice,
+  togglePause,
+  handleAction,
+  scheduleRoomCleanup,
+  cancelRoomCleanup
+} = require('./room-manager');
 
 const app = express();
 app.use(cors());
@@ -33,23 +44,26 @@ app.post('/api/rooms', async (req, res) => {
   }
 });
 
+// clientId — секрет клиента: по нему сервер возвращает капитана на его место,
+// поэтому наружу его отдавать нельзя (иначе любой зритель перехватит место капитана)
+const publicPlayers = (room) => room.players.map(({ clientId, ...rest }) => rest);
+
+function publicState(room) {
+  return {
+    players: publicPlayers(room),
+    series: room.series,
+    current: room.current
+  };
+}
+
 app.get('/api/rooms/:id', (req, res) => {
   const room = rooms.get(String(req.params.id).toUpperCase());
   if (!room) return res.status(404).json({ error: 'Не найдена' });
-  res.json({
-    id: room.id,
-    players: room.players,
-    series: room.series,
-    current: room.current
-  });
+  res.json({ id: room.id, ...publicState(room) });
 });
 
 function broadcastState(room) {
-  io.to(room.id).emit('state', {
-    players: room.players,
-    series: room.series,
-    current: room.current
-  });
+  io.to(room.id).emit('state', publicState(room));
 }
 
 function isCaptain(player) {
@@ -89,6 +103,12 @@ io.on('connection', (socket) => {
       player.online = false;
     } else {
       room.players = room.players.filter(p => p !== player);
+    }
+
+    // Готовность действует только пока капитан остаётся подключённым.
+    if (room.series.readyCheck && (player.squad === 0 || player.squad === 1)) {
+      room.series.readyCheck.confirmedSquads = room.series.readyCheck.confirmedSquads
+        .filter(squad => squad !== player.squad);
     }
 
     if (!room.players.some(p => p.online)) scheduleRoomCleanup(room);
@@ -133,12 +153,23 @@ io.on('connection', (socket) => {
     if (team !== 0 && team !== 1) return;
     const player = currentRoom.players.find(p => p.id === socket.id);
     if (!isCaptain(player)) return;
-    if (currentRoom.current && !currentRoom.current.finished) {
-      return socket.emit('error', { msg: 'Нельзя менять команду во время драфта' });
+    if (currentRoom.current || currentRoom.series.readyCheck || currentRoom.series.selection || currentRoom.series.currentGame > 0) {
+      return socket.emit('error', { msg: 'Нельзя менять команду после начала серии' });
     }
-    const taken = currentRoom.players.some(p => isCaptain(p) && p.team === team && p.id !== socket.id);
+    const taken = currentRoom.players.some(p => isCaptain(p) && p.squad === team && p.id !== socket.id);
     if (taken) return socket.emit('error', { msg: 'Команда уже занята другим капитаном' });
+    player.squad = team;
     player.team = team;
+    currentRoom.broadcastState();
+  });
+
+  on('configureSeries', (payload) => {
+    const { mode, totalGames } = asObject(payload);
+    if (!currentRoom) return;
+    const player = currentRoom.players.find(p => p.id === socket.id);
+    if (!isCaptain(player)) return socket.emit('error', { msg: 'Настройки доступны только капитану' });
+    const result = configureSeries(currentRoom, mode, Number(totalGames));
+    if (result.error) return socket.emit('error', { msg: result.error });
     currentRoom.broadcastState();
   });
 
@@ -146,11 +177,28 @@ io.on('connection', (socket) => {
     if (!currentRoom) return;
     const player = currentRoom.players.find(p => p.id === socket.id);
     if (!isCaptain(player)) return socket.emit('error', { msg: 'Только капитан может начать драфт' });
-    if (currentRoom.current) return socket.emit('error', { msg: 'Драфт уже начат' });
-    const hasRadiant = currentRoom.players.some(p => isCaptain(p) && p.team === 0);
-    const hasDire = currentRoom.players.some(p => isCaptain(p) && p.team === 1);
+    if (currentRoom.current || currentRoom.series.readyCheck || currentRoom.series.selection) {
+      return socket.emit('error', { msg: 'Серия уже запускается' });
+    }
+    const hasRadiant = currentRoom.players.some(p => isCaptain(p) && p.squad === 0);
+    const hasDire = currentRoom.players.some(p => isCaptain(p) && p.squad === 1);
     if (!hasRadiant || !hasDire) return socket.emit('error', { msg: 'Нужно 2 капитана, занявших Radiant и Dire' });
-    startNewGame(currentRoom);
+    beginNextGame(currentRoom);
+    currentRoom.broadcastState();
+  });
+
+  on('confirmReady', () => {
+    if (!currentRoom) return;
+    const result = confirmReady(currentRoom, socket.id);
+    if (result.error) return socket.emit('error', { msg: result.error });
+    currentRoom.broadcastState();
+  });
+
+  on('setupChoice', (payload) => {
+    const { category, value } = asObject(payload);
+    if (!currentRoom) return;
+    const result = handleSetupChoice(currentRoom, socket.id, category, value);
+    if (result.error) return socket.emit('error', { msg: result.error });
     currentRoom.broadcastState();
   });
 
@@ -162,7 +210,7 @@ io.on('connection', (socket) => {
     if (currentRoom.series.currentGame >= currentRoom.series.totalGames) {
       return socket.emit('error', { msg: 'Серия завершена!' });
     }
-    startNewGame(currentRoom);
+    beginNextGame(currentRoom);
     currentRoom.broadcastState();
   });
 
@@ -170,6 +218,13 @@ io.on('connection', (socket) => {
     const { heroId, actionType } = asObject(payload);
     if (!currentRoom) return;
     const result = handleAction(currentRoom, socket.id, heroId, actionType);
+    if (result.error) return socket.emit('error', { msg: result.error });
+    currentRoom.broadcastState();
+  });
+
+  on('togglePause', () => {
+    if (!currentRoom) return;
+    const result = togglePause(currentRoom, socket.id);
     if (result.error) return socket.emit('error', { msg: result.error });
     currentRoom.broadcastState();
   });

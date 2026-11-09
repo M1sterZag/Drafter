@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+// Адрес backend для dev-прокси (переопределяется в e2e-тестах)
+const backendUrl = process.env.BACKEND_URL || 'http://localhost:3001';
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -10,11 +13,11 @@ export default defineConfig({
     // Проксирование запросов к backend
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: backendUrl,
         changeOrigin: true,
       },
       '/socket.io': {
-        target: 'http://localhost:3001',
+        target: backendUrl,
         changeOrigin: true,
         ws: true, // Важно для WebSocket!
       }

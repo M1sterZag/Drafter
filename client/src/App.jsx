@@ -9,25 +9,6 @@ const ATTR_CONFIG = {
   uni: { label: 'УНИВЕРСАЛ', color: 'text-purple-500', bg: 'bg-purple-500/10', border: 'border-purple-500/30' }
 };
 
-const DRAFT_ORDER = [
-  { team: 0, action: 'ban' },
-  { team: 1, action: 'ban' },
-  { team: 0, action: 'ban' },
-  { team: 1, action: 'ban' },
-  { team: 0, action: 'ban' },
-  { team: 1, action: 'ban' },
-  { team: 0, action: 'pick' },
-  { team: 1, action: 'pick' },
-  { team: 1, action: 'pick' },
-  { team: 0, action: 'pick' },
-  { team: 0, action: 'pick' },
-  { team: 1, action: 'pick' },
-  { team: 1, action: 'pick' },
-  { team: 0, action: 'pick' },
-  { team: 0, action: 'pick' },
-  { team: 1, action: 'pick' },
-];
-
 // Постоянный (на время жизни вкладки) идентификатор клиента —
 // по нему сервер возвращает капитана на его место после перезагрузки страницы
 function getClientId() {
@@ -111,7 +92,9 @@ export default function App() {
         setSelectedHero(null);
       }
       setState(s);
-      if (s.current) setScreen('draft');
+      if (s.series?.readyCheck) setScreen('ready');
+      else if (s.series?.selection) setScreen('setup');
+      else if (s.current) setScreen('draft');
       else if (s.players?.length) setScreen('lobby');
     };
     const onError = (e) => {
@@ -187,7 +170,7 @@ export default function App() {
 
   const confirmAction = () => {
     if (!selectedHero || !state?.current) return;
-    const step = DRAFT_ORDER[state.current.draftStep];
+    const step = state.current.draftOrder[state.current.draftStep];
     if (!step) return;
     socket.emit('draftAction', { heroId: selectedHero, actionType: step.action });
     setSelectedHero(null);
@@ -278,6 +261,138 @@ export default function App() {
     );
   }
 
+  // --- CAPTAINS READY CHECK ---
+  if (screen === 'ready' && state?.series?.readyCheck) {
+    const readyCheck = state.series.readyCheck;
+    const captains = state.players
+      .filter(p => p.role === 'captain' && (p.squad === 0 || p.squad === 1))
+      .sort((a, b) => a.squad - b.squad);
+    const currentPlayer = state.players.find(p => p.id === socket.id);
+    const isCaptain = currentPlayer?.role === 'captain';
+    const isReady = isCaptain && readyCheck.confirmedSquads.includes(currentPlayer.squad);
+
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <div className="glass-panel p-8 rounded-2xl w-full max-w-2xl space-y-6">
+          <div className="text-center">
+            <div className="text-sm uppercase tracking-widest text-yellow-500 font-bold">
+              Игра {readyCheck.gameNumber}/{state.series.totalGames}
+            </div>
+            <h1 className="text-3xl esports-title font-bold text-white mt-2">
+              {readyCheck.gameNumber === 1 ? 'Подтверждение старта серии' : 'Капитаны готовы к драфту?'}
+            </h1>
+            <p className="text-zinc-400 mt-2">Продолжим после подтверждения обоих капитанов</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {captains.map(captain => {
+              const confirmed = readyCheck.confirmedSquads.includes(captain.squad);
+              return (
+                <div key={captain.squad} className={`p-5 rounded-xl border text-center ${
+                  confirmed
+                    ? 'border-emerald-500 bg-emerald-900/20'
+                    : 'border-zinc-700 bg-zinc-900/60'
+                }`}>
+                  <div className="font-bold text-white">{captain.name}</div>
+                  <div className={`mt-2 text-sm uppercase font-bold ${confirmed ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                    {confirmed ? '✓ Готов' : 'Ожидание'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {isCaptain ? (
+            <button
+              onClick={() => socket.emit('confirmReady')}
+              disabled={isReady}
+              className="w-full py-4 rounded-xl bg-gradient-to-r from-yellow-600 to-yellow-500 disabled:from-zinc-700 disabled:to-zinc-700 disabled:text-zinc-400 text-black font-bold uppercase tracking-wider esports-title transition-all"
+            >
+              {isReady ? '✓ Ты подтвердил готовность' : 'Подтвердить готовность'}
+            </button>
+          ) : (
+            <p className="text-center text-zinc-500">Зрители ожидают подтверждения капитанов</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // --- PRO SERIES SETUP ---
+  if (screen === 'setup' && state?.series?.selection) {
+    const selection = state.series.selection;
+    const captains = state.players.filter(p => p.role === 'captain');
+    const currentPlayer = state.players.find(p => p.id === socket.id);
+    const expectedSquad = selection.stage === 'primary'
+      ? selection.chooserSquad
+      : 1 - selection.chooserSquad;
+    const chooser = captains.find(p => p.squad === selection.chooserSquad);
+    const expectedCaptain = captains.find(p => p.squad === expectedSquad);
+    const myTurn = currentPlayer?.role === 'captain' && currentPlayer.squad === expectedSquad;
+    const remainingCategory = selection.primaryCategory === 'side' ? 'pickOrder' : 'side';
+    const sendChoice = (category, value) => socket.emit('setupChoice', { category, value });
+    const describeChoice = () => {
+      if (selection.primaryCategory === 'side') return selection.primaryValue === 0 ? 'Radiant' : 'Dire';
+      return selection.primaryValue === 'first' ? 'First Pick' : 'Last Pick';
+    };
+
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <div className="glass-panel p-8 rounded-2xl w-full max-w-3xl space-y-6">
+          <div className="text-center">
+            <div className="text-sm uppercase tracking-widest text-yellow-500 font-bold">
+              Игра {selection.gameNumber}/{state.series.totalGames}
+            </div>
+            <h1 className="text-3xl esports-title font-bold text-white mt-2">
+              {selection.isCoinToss ? '🪙 Жеребьёвка' : 'Право выбора переходит другой команде'}
+            </h1>
+            <p className="text-zinc-400 mt-2">
+              Первым выбирает <span className="text-white font-bold">{chooser?.name || 'капитан'}</span>
+            </p>
+          </div>
+
+          {selection.stage === 'secondary' && (
+            <div className="bg-zinc-900/70 border border-zinc-700 rounded-xl p-4 text-center">
+              <span className="text-zinc-400">Первый выбор: </span>
+              <span className="text-yellow-400 font-bold">{describeChoice()}</span>
+            </div>
+          )}
+
+          {myTurn ? (
+            <div className="space-y-5">
+              <p className="text-center text-white font-bold uppercase tracking-wider">Твой выбор</p>
+
+              {(selection.stage === 'primary' || remainingCategory === 'side') && (
+                <div>
+                  <div className="text-xs text-zinc-500 uppercase font-bold mb-2">Выбрать сторону</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button onClick={() => sendChoice('side', 0)} className="p-4 rounded-xl border border-emerald-500/50 bg-emerald-900/20 text-emerald-400 font-bold hover:bg-emerald-500 hover:text-black transition-all">RADIANT</button>
+                    <button onClick={() => sendChoice('side', 1)} className="p-4 rounded-xl border border-red-500/50 bg-red-900/20 text-red-400 font-bold hover:bg-red-500 hover:text-black transition-all">DIRE</button>
+                  </div>
+                </div>
+              )}
+
+              {(selection.stage === 'primary' || remainingCategory === 'pickOrder') && (
+                <div>
+                  <div className="text-xs text-zinc-500 uppercase font-bold mb-2">Выбрать порядок драфта</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button onClick={() => sendChoice('pickOrder', 'first')} className="p-4 rounded-xl border border-yellow-500/50 bg-yellow-900/20 text-yellow-400 font-bold hover:bg-yellow-500 hover:text-black transition-all">FIRST PICK</button>
+                    <button onClick={() => sendChoice('pickOrder', 'last')} className="p-4 rounded-xl border border-blue-500/50 bg-blue-900/20 text-blue-400 font-bold hover:bg-blue-500 hover:text-white transition-all">LAST PICK</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-8">
+              <div className="w-10 h-10 mx-auto border-4 border-yellow-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-zinc-400 mt-4">Ожидание выбора капитана <span className="text-white font-bold">{expectedCaptain?.name || ''}</span></p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // --- LOBBY ---
   if (screen === 'lobby' && state) {
     const captains = state.players.filter(p => p.role === 'captain');
@@ -331,6 +446,41 @@ export default function App() {
               </span>
             </button>
           </div>
+        </div>
+
+        <div className="glass-panel p-6 rounded-2xl mb-6">
+          <h2 className="text-lg esports-title font-bold text-white mb-4">Формат серии</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs text-zinc-500 uppercase font-bold">Режим сторон и пиков</label>
+              <select
+                value={state.series.mode}
+                disabled={myPlayer?.role !== 'captain'}
+                onChange={e => socket.emit('configureSeries', { mode: e.target.value, totalGames: state.series.totalGames })}
+                className="w-full mt-1 p-3 rounded-lg bg-zinc-900/80 border border-zinc-700 text-white disabled:opacity-60"
+              >
+                <option value="fixed">Оставить на всю серию</option>
+                <option value="pro">Про-сцена: жеребьёвка и выбор</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-zinc-500 uppercase font-bold">Количество игр</label>
+              <select
+                value={state.series.totalGames}
+                disabled={myPlayer?.role !== 'captain'}
+                onChange={e => socket.emit('configureSeries', { mode: state.series.mode, totalGames: Number(e.target.value) })}
+                className="w-full mt-1 p-3 rounded-lg bg-zinc-900/80 border border-zinc-700 text-white disabled:opacity-60"
+              >
+                <option value={3}>BO3</option>
+                <option value={5}>BO5</option>
+              </select>
+            </div>
+          </div>
+          <p className="text-xs text-zinc-500 mt-3">
+            {state.series.mode === 'fixed'
+              ? 'Текущие стороны и порядок пиков сохранятся на всю серию.'
+              : 'Жеребьёвка на первой и решающей карте. Между ними право первого выбора чередуется.'}
+          </p>
         </div>
 
         <div className="grid grid-cols-2 gap-6 mb-8">
@@ -409,12 +559,13 @@ export default function App() {
 
   // --- DRAFT SCREEN ---
   if (screen === 'draft' && state?.current) {
-    const { pool, bans, picks, draftStep, gameNumber, finished, timers, draftHistory } = state.current;
+    const { pool, bans, picks, draftStep, gameNumber, finished, paused, pausedBySquad, timers, draftHistory, draftOrder } = state.current;
     const currentPlayer = state.players.find(p => p.id === socket.id);
     const isCaptain = currentPlayer?.role === 'captain';
     const myTeam = currentPlayer?.team;
-    const step = DRAFT_ORDER[draftStep];
-    const canAct = isCaptain && step && myTeam === step.team && !finished;
+    const step = draftOrder[draftStep];
+    const canAct = isCaptain && step && myTeam === step.team && !finished && !paused;
+    const pausedBy = state.players.find(p => p.role === 'captain' && p.squad === pausedBySquad);
 
     const byAttr = { str: [], agi: [], int: [], uni: [] };
     pool.forEach(h => {
@@ -431,8 +582,21 @@ export default function App() {
         {/* Header */}
         <div className="glass-panel p-2 rounded-xl mb-2 flex justify-between items-center flex-shrink-0">
           <div>
-            <h1 className="text-lg esports-title font-bold text-white">ИГРА <span className="text-yellow-500">{gameNumber}</span>/5</h1>
+            <h1 className="text-lg esports-title font-bold text-white">ИГРА <span className="text-yellow-500">{gameNumber}</span>/{state.series.totalGames}</h1>
           </div>
+
+          {isCaptain && !finished && (
+            <button
+              onClick={() => socket.emit('togglePause')}
+              className={`px-4 py-2 rounded-lg border font-bold uppercase tracking-wider text-xs transition-all ${
+                paused
+                  ? 'border-emerald-500 bg-emerald-900/30 text-emerald-400 hover:bg-emerald-500 hover:text-black'
+                  : 'border-yellow-500/50 bg-yellow-900/20 text-yellow-400 hover:bg-yellow-500 hover:text-black'
+              }`}
+            >
+              {paused ? '▶ Продолжить' : '⏸ Пауза'}
+            </button>
+          )}
           
           {!finished && step && (
             <div className={`px-4 py-1.5 rounded-lg font-bold esports-title flex items-center gap-2 ${
@@ -454,6 +618,13 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {paused && (
+          <div className="mb-2 rounded-xl border border-yellow-500/60 bg-yellow-950/80 px-4 py-2 text-center flex-shrink-0">
+            <span className="text-yellow-400 font-bold uppercase tracking-widest">⏸ Драфт на паузе</span>
+            {pausedBy && <span className="text-zinc-400 text-sm ml-2">— {pausedBy.name}</span>}
+          </div>
+        )}
 
         {/* Основной контент */}
         <div className="flex-1 flex gap-2 overflow-hidden">
@@ -579,7 +750,7 @@ export default function App() {
             {/* Дерево драфта */}
             <div className="glass-panel p-2 rounded-xl flex-1 overflow-y-auto">
               <div className="space-y-1.5">
-                {DRAFT_ORDER.map((slot, idx) => {
+                {draftOrder.map((slot, idx) => {
                   const historyItem = draftHistory.find(h => h.step === idx);
                   const isCurrent = !finished && idx === draftStep;
                   const isCompleted = idx < draftStep;
@@ -637,7 +808,12 @@ export default function App() {
             {/* Статус хода / Кнопка подтверждения */}
             {!finished && (
               <div className="glass-panel p-2 rounded-xl flex-shrink-0">
-                {canAct && selectedHero && selectedHeroData ? (
+                {paused ? (
+                  <div className="text-center py-2">
+                    <div className="text-sm font-bold text-yellow-400">⏸ Выбор героев заблокирован</div>
+                    <div className="text-xs text-zinc-500 mt-1">Ожидание продолжения драфта</div>
+                  </div>
+                ) : canAct && selectedHero && selectedHeroData ? (
                   <>
                     <div className="flex items-center gap-2 mb-2">
                       <img src={selectedHeroData.image} alt="" className="w-12 h-12 rounded-lg object-cover border-2 border-yellow-500" />
@@ -679,7 +855,7 @@ export default function App() {
                 onClick={() => socket.emit('nextGame')}
                 className="w-full py-2 rounded-xl bg-gradient-to-r from-yellow-600 to-yellow-500 text-black font-bold uppercase tracking-wider esports-title text-sm flex-shrink-0"
               >
-                ▶ Игра {state.series.currentGame + 1}/5
+                ▶ Игра {state.series.currentGame + 1}/{state.series.totalGames}
               </button>
             )}
           </div>

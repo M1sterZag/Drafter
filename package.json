@@ -2,7 +2,10 @@
   "name": "dota-draft",
   "version": "1.0.0",
   "scripts": {
-    "server": "nodemon server/index.js"
+    "server": "nodemon server/index.js",
+    "test:e2e:api": "node --test --test-concurrency=1 \"e2e/api/*.test.js\"",
+    "test:e2e:browser": "playwright test",
+    "test:e2e": "npm run test:e2e:api && npm run test:e2e:browser"
   },
   "dependencies": {
     "axios": "^1.6.0",
@@ -12,6 +15,8 @@
     "socket.io": "^4.7.2"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "@playwright/test": "^1.56.1",
+    "nodemon": "^3.0.1",
+    "socket.io-client": "^4.8.4"
   }
 }
